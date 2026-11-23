@@ -19,7 +19,6 @@ package org.springframework.web.util;
 import java.net.URLDecoder;
 import java.nio.charset.UnsupportedCharsetException;
 import java.util.LinkedHashMap;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 
@@ -524,8 +523,7 @@ public class UrlPathHelper {
 	 * @return the updated URI string
 	 */
 	public String removeSemicolonContent(String requestUri) {
-		return (this.removeSemicolonContent ?
-				removeSemicolonContentInternal(requestUri) : removeJsessionid(requestUri));
+		return (this.removeSemicolonContent ? removeSemicolonContentInternal(requestUri) : requestUri);
 	}
 
 	private String removeSemicolonContentInternal(String requestUri) {
@@ -535,16 +533,6 @@ public class UrlPathHelper {
 			String start = requestUri.substring(0, semicolonIndex);
 			requestUri = (slashIndex != -1) ? start + requestUri.substring(slashIndex) : start;
 			semicolonIndex = requestUri.indexOf(';', semicolonIndex);
-		}
-		return requestUri;
-	}
-
-	private String removeJsessionid(String requestUri) {
-		int startIndex = requestUri.toLowerCase(Locale.ROOT).indexOf(";jsessionid=");
-		if (startIndex != -1) {
-			int endIndex = requestUri.indexOf(';', startIndex + 12);
-			String start = requestUri.substring(0, startIndex);
-			requestUri = (endIndex != -1) ? start + requestUri.substring(endIndex) : start;
 		}
 		return requestUri;
 	}
