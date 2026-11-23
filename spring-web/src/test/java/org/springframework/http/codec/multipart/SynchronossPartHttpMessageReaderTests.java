@@ -27,6 +27,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.PosixFilePermission;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -241,6 +242,95 @@ public class SynchronossPartHttpMessageReaderTests extends AbstractLeakCheckingT
 		DataBuffer buffer = DataBufferUtils.join(parts.getFirst("filePart").content()).block();
 		assertThat(buffer.readableByteCount()).isEqualTo(content.length);
 		DataBufferUtils.release(buffer);
+	}
+
+	@Test  // CVE-2026-22740
+	void discardedPartsAreDeleted() throws IOException {
+		Path tempDirectory = Paths.get(System.getProperty("java.io.tmpdir"));
+		Set<Path> directoriesBefore = listFiles(tempDirectory, "synchronoss-file-upload-*");
+
+		SynchronossPartHttpMessageReader synchronossReader = new SynchronossPartHttpMessageReader();
+		MultipartHttpMessageReader multipartReader = new MultipartHttpMessageReader(synchronossReader);
+		byte[] content = new byte[synchronossReader.getMaxInMemorySize() * 2];
+		MultipartBodyBuilder partsBuilder = new MultipartBodyBuilder();
+		partsBuilder.part("filePart", new ByteArrayResource(content)).filename("large.bin");
+		partsBuilder.part("textPart", "sample-text");
+		ServerHttpRequest request = generateMultipartRequest(partsBuilder);
+
+		DataBuffer joined = DataBufferUtils.join(request.getBody()).block(Duration.ofSeconds(5));
+		byte[] body = new byte[joined.readableByteCount()];
+		joined.read(body);
+		DataBufferUtils.release(joined);
+
+		// Fail the request inside the second part: the first part is complete and stored on disk
+		int cut = new String(body, StandardCharsets.ISO_8859_1).indexOf("sample-text");
+		assertThat(cut).isPositive();
+		Flux<DataBuffer> truncatedBody = Flux.concat(
+				Flux.range(0, (cut + 4095) / 4096).map(i ->
+						this.bufferFactory.wrap(Arrays.copyOfRange(body, i * 4096, Math.min(cut, (i + 1) * 4096)))),
+				Flux.error(new IllegalStateException("connection reset")));
+		ServerHttpRequest truncatedRequest = MockServerHttpRequest.post("/")
+				.contentType(request.getHeaders().getContentType())
+				.body(truncatedBody);
+
+		StepVerifier.create(multipartReader.readMono(PARTS_ELEMENT_TYPE, truncatedRequest, emptyMap()))
+				.expectError()
+				.verify(Duration.ofSeconds(5));
+
+		Set<Path> directories = listFiles(tempDirectory, "synchronoss-file-upload-*");
+		directories.removeAll(directoriesBefore);
+		assertThat(directories).hasSize(1);
+		assertThat(listFiles(directories.iterator().next(), "*")).isEmpty();
+	}
+
+	@Test  // CVE-2026-22740
+	void unfinishedPartIsDeletedOnError() throws IOException {
+		testUnfinishedPartIsDeleted(Flux.error(new IllegalStateException("connection reset")),
+				parts -> parts.expectError().verify(Duration.ofSeconds(5)));
+	}
+
+	@Test  // CVE-2026-22740
+	void unfinishedPartIsDeletedOnComplete() throws IOException {
+		testUnfinishedPartIsDeleted(Flux.empty(),
+				parts -> parts.assertNext(result -> assertThat(result).isEmpty()).verifyComplete());
+	}
+
+	private void testUnfinishedPartIsDeleted(Flux<DataBuffer> bodyEnd,
+			Consumer<StepVerifier.FirstStep<MultiValueMap<String, Part>>> verification) throws IOException {
+
+		Path tempDirectory = Paths.get(System.getProperty("java.io.tmpdir"));
+		Set<Path> directoriesBefore = listFiles(tempDirectory, "synchronoss-file-upload-*");
+
+		SynchronossPartHttpMessageReader synchronossReader = new SynchronossPartHttpMessageReader();
+		MultipartHttpMessageReader multipartReader = new MultipartHttpMessageReader(synchronossReader);
+		byte[] content = new byte[synchronossReader.getMaxInMemorySize() * 4];
+		MultipartBodyBuilder partsBuilder = new MultipartBodyBuilder();
+		partsBuilder.part("filePart", new ByteArrayResource(content)).filename("large.bin");
+		ServerHttpRequest request = generateMultipartRequest(partsBuilder);
+
+		DataBuffer joined = DataBufferUtils.join(request.getBody()).block(Duration.ofSeconds(5));
+		byte[] body = new byte[joined.readableByteCount()];
+		joined.read(body);
+		DataBufferUtils.release(joined);
+
+		// End the request in the middle of the file part, once its body has spilled over to disk
+		int cut = body.length / 2;
+		assertThat(cut).isGreaterThan(synchronossReader.getMaxInMemorySize());
+		Flux<DataBuffer> truncatedBody = Flux.concat(
+				Flux.range(0, (cut + 4095) / 4096).map(i ->
+						this.bufferFactory.wrap(Arrays.copyOfRange(body, i * 4096, Math.min(cut, (i + 1) * 4096)))),
+				bodyEnd);
+		ServerHttpRequest truncatedRequest = MockServerHttpRequest.post("/")
+				.contentType(request.getHeaders().getContentType())
+				.body(truncatedBody);
+
+		verification.accept(StepVerifier.create(
+				multipartReader.readMono(PARTS_ELEMENT_TYPE, truncatedRequest, emptyMap())));
+
+		Set<Path> directories = listFiles(tempDirectory, "synchronoss-file-upload-*");
+		directories.removeAll(directoriesBefore);
+		assertThat(directories).hasSize(1);
+		assertThat(listFiles(directories.iterator().next(), "*")).isEmpty();
 	}
 
 	private static Set<Path> listFiles(Path directory, String glob) throws IOException {

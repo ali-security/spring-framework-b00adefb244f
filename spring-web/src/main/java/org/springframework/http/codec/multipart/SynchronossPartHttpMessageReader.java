@@ -215,6 +215,13 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 	}
 
 
+	static void deletePart(Part part) {
+		if (part instanceof SynchronossPart) {
+			((SynchronossPart) part).getStorage().dispose();
+		}
+	}
+
+
 	/**
 	 * Subscribe to the input stream and feed the Synchronoss parser. Then listen
 	 * for parser output, creating parts, and pushing them into the FluxSink.
@@ -307,6 +314,8 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 			catch (IOException ex) {
 				// ignore
 			}
+			// A part whose body was not fully received is never emitted: delete its temporary file
+			this.storageFactory.disposeUnfinishedPart();
 		}
 
 		private int getContentLength(HttpHeaders headers) {
@@ -326,6 +335,9 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 		private boolean isFilePart;
 
 		private long partSize;
+
+		@Nullable
+		private StreamStorage unfinishedStorage;
 
 		LimitedPartBodyStreamStorageFactory(Path fileStorageDirectory) {
 			// A custom PartBodyStreamStorageFactory makes the Synchronoss parser ignore
@@ -348,7 +360,9 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 			if (maxParts > 0 && index > maxParts) {
 				throw new DecodingException("Too many parts (" + index + " allowed)");
 			}
-			return this.storageFactory.newStreamStorageForPartBody(headers, index);
+			StreamStorage storage = this.storageFactory.newStreamStorageForPartBody(headers, index);
+			this.unfinishedStorage = storage;
+			return storage;
 		}
 
 		public void increaseByteCount(long byteCount) {
@@ -367,6 +381,15 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 			this.index++;
 			this.isFilePart = false;
 			this.partSize = 0;
+			this.unfinishedStorage = null;
+		}
+
+		public void disposeUnfinishedPart() {
+			StreamStorage storage = this.unfinishedStorage;
+			this.unfinishedStorage = null;
+			if (storage != null) {
+				storage.dispose();
+			}
 		}
 	}
 
