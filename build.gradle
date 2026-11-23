@@ -2,23 +2,10 @@ plugins {
 	id 'io.spring.dependency-management' version '1.0.8.RELEASE' apply false
 	id 'org.jetbrains.kotlin.jvm' version '1.3.61' apply false
 	id 'org.jetbrains.dokka' version '0.9.18' apply false
-	id 'org.asciidoctor.jvm.convert' version '2.4.0'
 	id 'io.spring.nohttp' version '0.0.4.RELEASE'
 	id 'de.undercouch.download' version '4.0.0'
-	id 'com.gradle.build-scan' version '3.1.1'
-	id "com.jfrog.artifactory" version '4.11.0' apply false
 	id "io.freefair.aspectj" version "4.1.1" apply false
 	id "com.github.ben-manes.versions" version "0.24.0"
-}
-
-apply from: "$rootDir/gradle/build-scan-user-data.gradle"
-buildScan {
-	captureTaskInputFiles = true
-	obfuscation {
-		ipAddresses { addresses -> addresses.collect { address -> '0.0.0.0'} }
-	}
-	publishAlwaysIf(System.getenv('GRADLE_ENTERPRISE_URL') != null)
-	server = 'https://ge.spring.io'
 }
 
 ext {
@@ -286,7 +273,7 @@ configure(allprojects) { project ->
 		}
 		repositories {
 			mavenCentral()
-			maven { url "https://repo.spring.io/libs-spring-framework-build" }
+			maven { url "https://maven.repository.redhat.com/ga/" }
 		}
 	}
 	configurations.all {
@@ -389,7 +376,6 @@ configure(rootProject) {
 	apply plugin: "io.spring.nohttp"
 	apply plugin: 'org.springframework.build.api-diff'
 	apply from: "${rootDir}/gradle/publications.gradle"
-	apply from: "${rootDir}/gradle/docs.gradle"
 
 	nohttp {
 		source.exclude "**/test-output/**"
@@ -403,16 +389,6 @@ configure(rootProject) {
 			[ '.classpath', '.project' ]
 				.collect { rootPath.relativize(new File(dir, it).toPath()) }
 				.forEach { source.exclude "$it" }
-		}
-	}
-
-	publishing {
-		publications {
-			mavenJava(MavenPublication) {
-				artifact docsZip
-				artifact schemaZip
-				artifact distZip
-			}
 		}
 	}
 }

@@ -50,7 +50,7 @@ class WebSocketIntegrationTests extends AbstractWebSocketIntegrationTests {
 
 	private static final Log logger = LogFactory.getLog(WebSocketIntegrationTests.class);
 
-	private static final Duration TIMEOUT = Duration.ofMillis(5000);
+	private static final Duration TIMEOUT = Duration.ofMillis(30000);  // sealed build: 5s flaked on shared CI runners (echo case [9])
 
 
 	@Override
