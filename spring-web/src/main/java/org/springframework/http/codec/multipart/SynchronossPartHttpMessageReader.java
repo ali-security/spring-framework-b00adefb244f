@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2019 the original author or authors.
+ * Copyright 2002-2021 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,6 +22,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -30,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import org.synchronoss.cloud.nio.multipart.DefaultPartBodyStreamStorageFactory;
@@ -83,12 +85,16 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 	// Static DataBufferFactory to copy from FileInputStream or wrap bytes[].
 	private static final DataBufferFactory bufferFactory = new DefaultDataBufferFactory();
 
+	private static final String FILE_STORAGE_DIRECTORY_PREFIX = "synchronoss-file-upload-";
+
 
 	private int maxInMemorySize = 256 * 1024;
 
 	private long maxDiskUsagePerPart = -1;
 
 	private int maxParts = -1;
+
+	private final AtomicReference<Path> fileStorageDirectory = new AtomicReference<>();
 
 
 	/**
@@ -164,20 +170,48 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 
 	@Override
 	public Flux<Part> read(ResolvableType elementType, ReactiveHttpInputMessage message, Map<String, Object> hints) {
-		return Flux.create(new SynchronossPartGenerator(message))
-				.doOnNext(part -> {
-					if (!Hints.isLoggingSuppressed(hints)) {
-						LogFormatUtils.traceDebug(logger, traceOn -> Hints.getLogPrefix(hints) + "Parsed " +
-								(isEnableLoggingRequestDetails() ?
-										LogFormatUtils.formatValue(part, !traceOn) :
-										"parts '" + part.name() + "' (content masked)"));
-					}
-				});
+		return getFileStorageDirectory().flatMapMany(directory ->
+				Flux.create(new SynchronossPartGenerator(message, directory))
+						.doOnNext(part -> {
+							if (!Hints.isLoggingSuppressed(hints)) {
+								LogFormatUtils.traceDebug(logger, traceOn -> Hints.getLogPrefix(hints) + "Parsed " +
+										(isEnableLoggingRequestDetails() ?
+												LogFormatUtils.formatValue(part, !traceOn) :
+												"parts '" + part.name() + "' (content masked)"));
+							}
+						}));
 	}
 
 	@Override
 	public Mono<Part> readMono(ResolvableType elementType, ReactiveHttpInputMessage message, Map<String, Object> hints) {
 		return Mono.error(new UnsupportedOperationException("Cannot read multipart request body into single Part"));
+	}
+
+	private Mono<Path> getFileStorageDirectory() {
+		return Mono.defer(() -> {
+			Path directory = this.fileStorageDirectory.get();
+			if (directory != null) {
+				return Mono.just(directory);
+			}
+			else {
+				// Created on the calling thread: switching threads here would make the
+				// request body get subscribed to outside of the server's own threads.
+				return Mono.fromCallable(() -> {
+					Path tempDirectory = Files.createTempDirectory(FILE_STORAGE_DIRECTORY_PREFIX);
+					if (this.fileStorageDirectory.compareAndSet(null, tempDirectory)) {
+						return tempDirectory;
+					}
+					else {
+						try {
+							Files.delete(tempDirectory);
+						}
+						catch (IOException ignored) {
+						}
+						return this.fileStorageDirectory.get();
+					}
+				});
+			}
+		});
 	}
 
 
@@ -189,7 +223,9 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 
 		private final ReactiveHttpInputMessage inputMessage;
 
-		private final LimitedPartBodyStreamStorageFactory storageFactory = new LimitedPartBodyStreamStorageFactory();
+		private final LimitedPartBodyStreamStorageFactory storageFactory;
+
+		private final Path fileStorageDirectory;
 
 		@Nullable
 		private NioMultipartParserListener listener;
@@ -197,8 +233,10 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 		@Nullable
 		private NioMultipartParser parser;
 
-		public SynchronossPartGenerator(ReactiveHttpInputMessage inputMessage) {
+		public SynchronossPartGenerator(ReactiveHttpInputMessage inputMessage, Path fileStorageDirectory) {
 			this.inputMessage = inputMessage;
+			this.fileStorageDirectory = fileStorageDirectory;
+			this.storageFactory = new LimitedPartBodyStreamStorageFactory(fileStorageDirectory);
 		}
 
 		@Override
@@ -215,6 +253,7 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 
 			this.parser = Multipart
 					.multipart(context)
+					.saveTemporaryFilesTo(this.fileStorageDirectory.toString())
 					.usePartBodyStreamStorageFactory(this.storageFactory)
 					.forNIO(this.listener);
 
@@ -280,15 +319,22 @@ public class SynchronossPartHttpMessageReader extends LoggingCodecSupport implem
 
 	private class LimitedPartBodyStreamStorageFactory implements PartBodyStreamStorageFactory {
 
-		private final PartBodyStreamStorageFactory storageFactory = (maxInMemorySize > 0 ?
-				new DefaultPartBodyStreamStorageFactory(maxInMemorySize) :
-				new DefaultPartBodyStreamStorageFactory());
+		private final PartBodyStreamStorageFactory storageFactory;
 
 		private int index = 1;
 
 		private boolean isFilePart;
 
 		private long partSize;
+
+		LimitedPartBodyStreamStorageFactory(Path fileStorageDirectory) {
+			// A custom PartBodyStreamStorageFactory makes the Synchronoss parser ignore
+			// saveTemporaryFilesTo, so the storage directory has to be passed in here.
+			String tempFolder = fileStorageDirectory.toString();
+			this.storageFactory = (maxInMemorySize > 0 ?
+					new DefaultPartBodyStreamStorageFactory(tempFolder, maxInMemorySize) :
+					new DefaultPartBodyStreamStorageFactory(tempFolder));
+		}
 
 		public int getCurrentPartIndex() {
 			return this.index;
