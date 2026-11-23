@@ -41,7 +41,6 @@ import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
-import org.springframework.util.StringUtils;
 
 /**
  * {@code HttpMessageWriter} for {@code "text/event-stream"} responses.
@@ -138,7 +137,9 @@ public class ServerSentEventHttpMessageWriter implements HttpMessageWriter<Objec
 				writeField("retry", retry.toMillis(), sb);
 			}
 			if (comment != null) {
-				sb.append(':').append(StringUtils.replace(comment, "\n", "\n:")).append("\n");
+				sb.append(':');
+				appendEscaped(comment, "\n:", sb);
+				sb.append('\n');
 			}
 			if (data != null) {
 				sb.append("data:");
@@ -158,6 +159,30 @@ public class ServerSentEventHttpMessageWriter implements HttpMessageWriter<Objec
 		sb.append("\n");
 	}
 
+	private void appendEscaped(String input, String replacement, StringBuilder sb) {
+		if (input.indexOf('\n') == -1 && input.indexOf('\r') == -1) {
+			sb.append(input);
+		}
+		else {
+			int length = input.length();
+			for (int i = 0; i < length; i++) {
+				char c = input.charAt(i);
+				if (c == '\r') {
+					if (i + 1 < length && input.charAt(i + 1) == '\n') {
+						i++;
+					}
+					sb.append(replacement);
+				}
+				else if (c == '\n') {
+					sb.append(replacement);
+				}
+				else {
+					sb.append(c);
+				}
+			}
+		}
+	}
+
 	@SuppressWarnings("unchecked")
 	private <T> List<DataBuffer> encodeEvent(CharSequence markup, @Nullable T data, ResolvableType dataType,
 			MediaType mediaType, DataBufferFactory factory, Map<String, Object> hints) {
@@ -166,7 +191,9 @@ public class ServerSentEventHttpMessageWriter implements HttpMessageWriter<Objec
 		result.add(encodeText(markup, mediaType, factory));
 		if (data != null) {
 			if (data instanceof String) {
-				String dataLine = StringUtils.replace((String) data, "\n", "\ndata:") + "\n";
+				StringBuilder dataLine = new StringBuilder();
+				appendEscaped((String) data, "\ndata:", dataLine);
+				dataLine.append('\n');
 				result.add(encodeText(dataLine, mediaType, factory));
 			}
 			else if (this.encoder == null) {
